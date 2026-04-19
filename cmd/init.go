@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -25,7 +26,18 @@ var (
 
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
+
+	warnStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214"))
 )
+
+const banner = `
+     _    _ _ _                    _ _
+ ___| | _(_) | |  __ ____ _ _   _| | |_
+/ __| |/ / | | | / _/ _' | | | | | | __|
+\__ \   <| | | | \ \ (_| | |_| | | | |_
+|___/_|\_\_|_|_|  \__\__,_|\__,_|_|_|\__|
+`
 
 func init() {
 	rootCmd.AddCommand(initCmd)
@@ -37,16 +49,32 @@ var initCmd = &cobra.Command{
 	RunE:  runInit,
 }
 
+func cancelled() {
+	fmt.Println()
+	fmt.Println(dimStyle.Render("Setup cancelled."))
+	os.Exit(0)
+}
+
+func checkCancel(err error) error {
+	if err != nil && errors.Is(err, huh.ErrUserAborted) {
+		cancelled()
+	}
+	return err
+}
+
 func runInit(cmd *cobra.Command, args []string) error {
-	fmt.Println(titleStyle.Render("skill-vault"))
-	fmt.Println(dimStyle.Render("Back up your AI agent skills, config, and conversations.\n"))
+	fmt.Println(titleStyle.Render(banner))
+	fmt.Println(dimStyle.Render("Back up your AI agent skills, config, and conversations."))
+	fmt.Println()
 
 	if config.Exists() {
 		var overwrite bool
-		huh.NewConfirm().
+		if err := checkCancel(huh.NewConfirm().
 			Title("Existing config found. Overwrite?").
 			Value(&overwrite).
-			Run()
+			Run()); err != nil {
+			return err
+		}
 		if !overwrite {
 			fmt.Println("Keeping existing config.")
 			return nil
@@ -64,7 +92,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	for _, t := range tools {
 		fmt.Printf("  %s %s %s\n",
-			successStyle.Render("✓"),
+			successStyle.Render("found"),
 			t.Description,
 			dimStyle.Render(fmt.Sprintf("(%s)", detect.FormatSize(t.DiskSize))))
 	}
@@ -84,27 +112,53 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	githubCfg, err := configureGitHub()
+	backupTargets, err := selectBackupTargets(toolConfigs)
 	if err != nil {
 		return err
 	}
 
-	s3Cfg, err := configureS3(toolConfigs)
-	if err != nil {
-		return err
+	cfg := &config.Config{
+		Tools: toolConfigs,
+	}
+
+	for _, target := range backupTargets {
+		switch target {
+		case "git":
+			gitCfg, err := configureGit()
+			if err != nil {
+				return err
+			}
+			cfg.Git = gitCfg
+		case "s3":
+			s3Cfg, err := configureS3()
+			if err != nil {
+				return err
+			}
+			cfg.S3 = s3Cfg
+		case "gcs":
+			gcsCfg, err := configureGCS()
+			if err != nil {
+				return err
+			}
+			cfg.GCS = gcsCfg
+		case "azure":
+			azureCfg, err := configureAzure()
+			if err != nil {
+				return err
+			}
+			cfg.Azure = azureCfg
+		case "icloud":
+			cfg.ICloud = config.ICloudConfig{Enabled: true}
+		case "timemachine":
+			cfg.TimeMachine = config.TimeMachineConfig{Enabled: true}
+		}
 	}
 
 	scheduleCfg, err := configureSchedule()
 	if err != nil {
 		return err
 	}
-
-	cfg := &config.Config{
-		Tools:    toolConfigs,
-		GitHub:   githubCfg,
-		S3:       s3Cfg,
-		Schedule: scheduleCfg,
-	}
+	cfg.Schedule = scheduleCfg
 
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("saving config: %w", err)
@@ -133,11 +187,12 @@ func selectTools(tools []detect.Tool) ([]string, error) {
 	}
 
 	var selected []string
-	err := huh.NewMultiSelect[string]().
+	err := checkCancel(huh.NewMultiSelect[string]().
 		Title("Which tools do you want to back up?").
+		Description("Space to toggle, Enter to confirm").
 		Options(options...).
 		Value(&selected).
-		Run()
+		Run())
 
 	return selected, err
 }
@@ -174,11 +229,12 @@ func selectCategories(tools []detect.Tool, selectedNames []string) (map[string]c
 		}
 
 		var selected []string
-		err := huh.NewMultiSelect[string]().
+		err := checkCancel(huh.NewMultiSelect[string]().
 			Title(fmt.Sprintf("What to back up from %s?", t.Description)).
+			Description("Space to toggle, Enter to confirm").
 			Options(options...).
 			Value(&selected).
-			Run()
+			Run())
 		if err != nil {
 			return nil, err
 		}
@@ -189,42 +245,7 @@ func selectCategories(tools []detect.Tool, selectedNames []string) (map[string]c
 	return result, nil
 }
 
-func configureGitHub() (config.GitHubConfig, error) {
-	var cfg config.GitHubConfig
-
-	err := huh.NewConfirm().
-		Title("Back up to a GitHub repository?").
-		Description("Skills, config, and memory will be synced to a git repo").
-		Value(&cfg.Enabled).
-		Run()
-	if err != nil || !cfg.Enabled {
-		return cfg, err
-	}
-
-	home, _ := os.UserHomeDir()
-	err = huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("GitHub repo URL").
-				Placeholder("git@github.com:you/ai-backup.git").
-				Value(&cfg.Repo),
-			huh.NewInput().
-				Title("Local clone path").
-				Placeholder(home+"/Development/ai-backup").
-				Value(&cfg.LocalPath),
-		),
-	).Run()
-
-	if cfg.LocalPath == "" {
-		cfg.LocalPath = home + "/Development/ai-backup"
-	}
-
-	return cfg, err
-}
-
-func configureS3(toolConfigs map[string]config.ToolConfig) (config.S3Config, error) {
-	var cfg config.S3Config
-
+func selectBackupTargets(toolConfigs map[string]config.ToolConfig) ([]string, error) {
 	hasConversations := false
 	for _, t := range toolConfigs {
 		for _, c := range t.Categories {
@@ -234,21 +255,85 @@ func configureS3(toolConfigs map[string]config.ToolConfig) (config.S3Config, err
 		}
 	}
 
-	if !hasConversations {
-		return cfg, nil
+	options := []huh.Option[string]{
+		huh.NewOption("Git repository (GitHub, GitLab, etc.)", "git"),
 	}
 
-	err := huh.NewConfirm().
-		Title("Back up conversation logs to S3?").
-		Description("Compressed daily snapshots — too large for git").
-		Value(&cfg.Enabled).
-		Run()
-	if err != nil || !cfg.Enabled {
+	cloudHint := "Compressed daily snapshots for conversation logs"
+	if hasConversations {
+		cloudHint = "Recommended — conversation logs are too large for git"
+	}
+
+	options = append(options,
+		huh.NewOption("AWS S3", "s3"),
+		huh.NewOption("Google Cloud Storage", "gcs"),
+		huh.NewOption("Azure Blob Storage", "azure"),
+		huh.NewOption("iCloud Drive", "icloud"),
+		huh.NewOption("Time Machine (verify inclusion)", "timemachine"),
+	)
+
+	var selected []string
+	err := checkCancel(huh.NewMultiSelect[string]().
+		Title("Where should skill-vault back up to?").
+		Description(cloudHint).
+		Options(options...).
+		Value(&selected).
+		Run())
+
+	return selected, err
+}
+
+func configureGit() (config.GitConfig, error) {
+	var cfg config.GitConfig
+	cfg.Enabled = true
+
+	var provider string
+	err := checkCancel(huh.NewSelect[string]().
+		Title("Git provider").
+		Options(
+			huh.NewOption("GitHub", "github"),
+			huh.NewOption("GitLab", "gitlab"),
+			huh.NewOption("Other", "other"),
+		).
+		Value(&provider).
+		Run())
+	if err != nil {
 		return cfg, err
 	}
+	cfg.Provider = provider
 
-	cfg.Region = "us-east-2"
-	err = huh.NewForm(
+	placeholder := "git@github.com:you/ai-backup.git"
+	if provider == "gitlab" {
+		placeholder = "git@gitlab.com:you/ai-backup.git"
+	}
+
+	home, _ := os.UserHomeDir()
+	err = checkCancel(huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Repository URL").
+				Placeholder(placeholder).
+				Value(&cfg.Repo),
+			huh.NewInput().
+				Title("Local clone path").
+				Placeholder(home+"/Development/ai-backup").
+				Value(&cfg.LocalPath),
+		),
+	).Run())
+
+	if cfg.LocalPath == "" {
+		cfg.LocalPath = home + "/Development/ai-backup"
+	}
+
+	return cfg, err
+}
+
+func configureS3() (config.S3Config, error) {
+	var cfg config.S3Config
+	cfg.Enabled = true
+	cfg.Region = "us-east-1"
+
+	err := checkCancel(huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
 				Title("S3 bucket name").
@@ -256,17 +341,58 @@ func configureS3(toolConfigs map[string]config.ToolConfig) (config.S3Config, err
 				Value(&cfg.Bucket),
 			huh.NewInput().
 				Title("AWS CLI profile").
+				Description("Leave blank for default profile").
 				Placeholder("default").
 				Value(&cfg.Profile),
 			huh.NewInput().
 				Title("AWS region").
 				Value(&cfg.Region),
 		),
-	).Run()
+	).Run())
 
-	if cfg.Profile == "" {
-		cfg.Profile = "default"
-	}
+	return cfg, err
+}
+
+func configureGCS() (config.GCSConfig, error) {
+	var cfg config.GCSConfig
+	cfg.Enabled = true
+
+	err := checkCancel(huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("GCS bucket name").
+				Placeholder("my-ai-backups").
+				Value(&cfg.Bucket),
+			huh.NewInput().
+				Title("GCP project ID").
+				Description("Leave blank to use gcloud default project").
+				Placeholder("my-project").
+				Value(&cfg.Project),
+		),
+	).Run())
+
+	return cfg, err
+}
+
+func configureAzure() (config.AzureConfig, error) {
+	var cfg config.AzureConfig
+	cfg.Enabled = true
+
+	err := checkCancel(huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Blob container name").
+				Placeholder("ai-backups").
+				Value(&cfg.Container),
+			huh.NewInput().
+				Title("Storage account name").
+				Value(&cfg.StorageAcct),
+			huh.NewInput().
+				Title("Resource group").
+				Description("Leave blank if not needed").
+				Value(&cfg.ResourceGroup),
+		),
+	).Run())
 
 	return cfg, err
 }
@@ -274,44 +400,44 @@ func configureS3(toolConfigs map[string]config.ToolConfig) (config.S3Config, err
 func configureSchedule() (config.ScheduleConfig, error) {
 	var cfg config.ScheduleConfig
 
-	err := huh.NewConfirm().
+	err := checkCancel(huh.NewConfirm().
 		Title("Set up automatic backups?").
 		Description("Creates a macOS launchd job to sync on a schedule").
 		Value(&cfg.Enabled).
-		Run()
+		Run())
 	if err != nil || !cfg.Enabled {
 		return cfg, err
 	}
 
 	var intervalChoice string
-	err = huh.NewSelect[string]().
+	err = checkCancel(huh.NewSelect[string]().
 		Title("How often should skill-vault sync?").
 		Options(
 			huh.NewOption("Every 6 hours", "6h"),
 			huh.NewOption("Every 12 hours", "12h"),
 			huh.NewOption("Every 24 hours (daily)", "24h"),
-			huh.NewOption("Every 48 hours", "48h"),
+			huh.NewOption("Every 2 days", "48h"),
+			huh.NewOption("Every 7 days (weekly)", "168h"),
 			huh.NewOption("Custom", "custom"),
 		).
 		Value(&intervalChoice).
-		Run()
+		Run())
 	if err != nil {
 		return cfg, err
 	}
 
 	if intervalChoice == "custom" {
-		err = huh.NewInput().
+		err = checkCancel(huh.NewInput().
 			Title("Custom interval").
 			Description("Go duration format: e.g. 8h, 72h (minimum 1h)").
 			Placeholder("24h").
 			Value(&intervalChoice).
-			Run()
+			Run())
 		if err != nil {
 			return cfg, err
 		}
 	}
 
-	cfg.Interval = intervalChoice
-	_ = strings.TrimSpace(cfg.Interval)
+	cfg.Interval = strings.TrimSpace(intervalChoice)
 	return cfg, nil
 }

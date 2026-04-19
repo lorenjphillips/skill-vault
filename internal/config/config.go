@@ -12,8 +12,9 @@ type ToolConfig struct {
 	Categories []string `yaml:"categories"`
 }
 
-type GitHubConfig struct {
+type GitConfig struct {
 	Enabled   bool   `yaml:"enabled"`
+	Provider  string `yaml:"provider"`
 	Repo      string `yaml:"repo"`
 	LocalPath string `yaml:"local_path"`
 }
@@ -25,16 +26,41 @@ type S3Config struct {
 	Region  string `yaml:"region"`
 }
 
+type GCSConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Bucket  string `yaml:"bucket"`
+	Project string `yaml:"project"`
+}
+
+type AzureConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Container     string `yaml:"container"`
+	StorageAcct   string `yaml:"storage_account"`
+	ResourceGroup string `yaml:"resource_group"`
+}
+
+type ICloudConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+type TimeMachineConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
 type ScheduleConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	Interval string `yaml:"interval"`
 }
 
 type Config struct {
-	Tools    map[string]ToolConfig `yaml:"tools"`
-	GitHub   GitHubConfig          `yaml:"github"`
-	S3       S3Config              `yaml:"s3"`
-	Schedule ScheduleConfig        `yaml:"schedule"`
+	Tools       map[string]ToolConfig `yaml:"tools"`
+	Git         GitConfig             `yaml:"git"`
+	S3          S3Config              `yaml:"s3"`
+	GCS         GCSConfig             `yaml:"gcs,omitempty"`
+	Azure       AzureConfig           `yaml:"azure,omitempty"`
+	ICloud      ICloudConfig          `yaml:"icloud,omitempty"`
+	TimeMachine TimeMachineConfig     `yaml:"time_machine,omitempty"`
+	Schedule    ScheduleConfig        `yaml:"schedule"`
 }
 
 func Dir() string {

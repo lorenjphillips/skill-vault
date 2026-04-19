@@ -12,18 +12,10 @@ import (
 	"github.com/lorenjphillips/skill-vault/internal/detect"
 )
 
-func expandHome(path string) string {
-	if len(path) > 1 && path[:2] == "~/" {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, path[2:])
-	}
-	return path
-}
-
 func Run(cfg *config.Config) error {
-	if cfg.GitHub.Enabled {
-		if err := syncGitHub(cfg); err != nil {
-			return fmt.Errorf("github sync: %w", err)
+	if cfg.Git.Enabled {
+		if err := syncGit(cfg); err != nil {
+			return fmt.Errorf("git sync: %w", err)
 		}
 	}
 	if cfg.S3.Enabled {
@@ -31,25 +23,44 @@ func Run(cfg *config.Config) error {
 			return fmt.Errorf("s3 sync: %w", err)
 		}
 	}
+	if cfg.GCS.Enabled {
+		if err := syncGCS(cfg); err != nil {
+			return fmt.Errorf("gcs sync: %w", err)
+		}
+	}
+	if cfg.Azure.Enabled {
+		if err := syncAzure(cfg); err != nil {
+			return fmt.Errorf("azure sync: %w", err)
+		}
+	}
+	if cfg.ICloud.Enabled {
+		if err := syncICloud(cfg); err != nil {
+			return fmt.Errorf("icloud sync: %w", err)
+		}
+	}
+	if cfg.TimeMachine.Enabled {
+		if err := verifyTimeMachine(cfg); err != nil {
+			fmt.Printf("  ⚠ Time Machine: %s\n", err)
+		}
+	}
 	return nil
 }
 
-func syncGitHub(cfg *config.Config) error {
-	repoDir := expandHome(cfg.GitHub.LocalPath)
+func syncGit(cfg *config.Config) error {
+	repoDir := detect.ExpandHome(cfg.Git.LocalPath)
 
 	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
-		fmt.Printf("  Cloning %s...\n", cfg.GitHub.Repo)
-		if err := run("git", "clone", cfg.GitHub.Repo, repoDir); err != nil {
+		fmt.Printf("  Cloning %s...\n", cfg.Git.Repo)
+		if err := run("git", "clone", cfg.Git.Repo, repoDir); err != nil {
 			return fmt.Errorf("clone: %w", err)
 		}
 	}
 
-	if err := runIn(repoDir, "git", "stash", "push", "--include-untracked", "-m",
-		fmt.Sprintf("skill-vault auto-stash %s", time.Now().Format("2006-01-02 15:04"))); err != nil {
-		// stash fails if nothing to stash — that's fine
-	}
+	runIn(repoDir, "git", "stash", "push", "--include-untracked", "-m",
+		fmt.Sprintf("skill-vault auto-stash %s", time.Now().Format("2006-01-02 15:04")))
 
-	if err := runIn(repoDir, "git", "pull", "--rebase", "origin", "main"); err != nil {
+	branch := detectDefaultBranch(repoDir)
+	if err := runIn(repoDir, "git", "pull", "--rebase", "origin", branch); err != nil {
 		return fmt.Errorf("pull: %w", err)
 	}
 
@@ -68,23 +79,33 @@ func syncGitHub(cfg *config.Config) error {
 		return err
 	}
 
-	out, _ := exec.Command("git", "-C", repoDir, "diff", "--cached", "--quiet").CombinedOutput()
 	if exec.Command("git", "-C", repoDir, "diff", "--cached", "--quiet").Run() == nil {
 		fmt.Println("  No changes to sync")
 		return nil
 	}
-	_ = out
 
 	msg := fmt.Sprintf("skill-vault sync %s", time.Now().Format("2006-01-02 15:04"))
 	if err := runIn(repoDir, "git", "commit", "-m", msg); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
-	if err := runIn(repoDir, "git", "push", "origin", "main"); err != nil {
+	if err := runIn(repoDir, "git", "push", "origin", branch); err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
 
-	fmt.Println("  Pushed to GitHub")
+	fmt.Printf("  Pushed to %s (%s)\n", cfg.Git.Provider, cfg.Git.Repo)
 	return nil
+}
+
+func detectDefaultBranch(repoDir string) string {
+	out, err := exec.Command("git", "-C", repoDir, "symbolic-ref", "refs/remotes/origin/HEAD").Output()
+	if err == nil {
+		ref := strings.TrimSpace(string(out))
+		parts := strings.Split(ref, "/")
+		if len(parts) > 0 {
+			return parts[len(parts)-1]
+		}
+	}
+	return "main"
 }
 
 func syncTool(repoDir, name string, tool config.ToolConfig) error {
@@ -109,7 +130,7 @@ func syncTool(repoDir, name string, tool config.ToolConfig) error {
 			continue
 		}
 
-		src := expandHome(bp.Path)
+		src := detect.ExpandHome(bp.Path)
 		if _, err := os.Stat(src); os.IsNotExist(err) {
 			continue
 		}
@@ -139,7 +160,7 @@ func syncTool(repoDir, name string, tool config.ToolConfig) error {
 	return nil
 }
 
-func syncS3(cfg *config.Config) error {
+func syncCloudConversations(cfg *config.Config, uploadFn func(archive, key string) error) error {
 	for name, tool := range cfg.Tools {
 		if !tool.Enabled {
 			continue
@@ -172,7 +193,7 @@ func syncS3(cfg *config.Config) error {
 				continue
 			}
 
-			src := expandHome(bp.Path)
+			src := detect.ExpandHome(bp.Path)
 			if _, err := os.Stat(src); os.IsNotExist(err) {
 				continue
 			}
@@ -185,22 +206,97 @@ func syncS3(cfg *config.Config) error {
 				return fmt.Errorf("tar %s: %w", name, err)
 			}
 
-			s3Key := fmt.Sprintf("%s-conversations-%s.tar.gz", name, time.Now().Format("20060102"))
-			fmt.Printf("  Uploading to s3://%s/%s...\n", cfg.S3.Bucket, s3Key)
-
-			args := []string{"s3", "cp", archive,
-				fmt.Sprintf("s3://%s/%s", cfg.S3.Bucket, s3Key),
-				"--profile", cfg.S3.Profile, "--quiet"}
-			if cfg.S3.Region != "" {
-				args = append(args, "--region", cfg.S3.Region)
-			}
-			if err := run("aws", args...); err != nil {
+			key := fmt.Sprintf("%s-conversations-%s.tar.gz", name, time.Now().Format("20060102"))
+			if err := uploadFn(archive, key); err != nil {
 				os.Remove(archive)
-				return fmt.Errorf("s3 upload %s: %w", name, err)
+				return err
 			}
 
 			os.Remove(archive)
-			fmt.Printf("  Uploaded %s\n", s3Key)
+			fmt.Printf("  Uploaded %s\n", key)
+		}
+	}
+	return nil
+}
+
+func syncS3(cfg *config.Config) error {
+	return syncCloudConversations(cfg, func(archive, key string) error {
+		fmt.Printf("  Uploading to s3://%s/%s...\n", cfg.S3.Bucket, key)
+		args := []string{"s3", "cp", archive,
+			fmt.Sprintf("s3://%s/%s", cfg.S3.Bucket, key), "--quiet"}
+		if cfg.S3.Profile != "" {
+			args = append(args, "--profile", cfg.S3.Profile)
+		}
+		if cfg.S3.Region != "" {
+			args = append(args, "--region", cfg.S3.Region)
+		}
+		return run("aws", args...)
+	})
+}
+
+func syncGCS(cfg *config.Config) error {
+	return syncCloudConversations(cfg, func(archive, key string) error {
+		dest := fmt.Sprintf("gs://%s/%s", cfg.GCS.Bucket, key)
+		fmt.Printf("  Uploading to %s...\n", dest)
+		args := []string{"storage", "cp", archive, dest, "--quiet"}
+		if cfg.GCS.Project != "" {
+			args = append(args, "--project", cfg.GCS.Project)
+		}
+		return run("gcloud", args...)
+	})
+}
+
+func syncAzure(cfg *config.Config) error {
+	return syncCloudConversations(cfg, func(archive, key string) error {
+		fmt.Printf("  Uploading to azure://%s/%s...\n", cfg.Azure.Container, key)
+		return run("az", "storage", "blob", "upload",
+			"--container-name", cfg.Azure.Container,
+			"--account-name", cfg.Azure.StorageAcct,
+			"--name", key,
+			"--file", archive,
+			"--overwrite",
+			"--only-show-errors")
+	})
+}
+
+func syncICloud(cfg *config.Config) error {
+	home, _ := os.UserHomeDir()
+	icloudDir := filepath.Join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "skill-vault")
+	os.MkdirAll(icloudDir, 0755)
+
+	return syncCloudConversations(cfg, func(archive, key string) error {
+		dest := filepath.Join(icloudDir, key)
+		fmt.Printf("  Copying to iCloud Drive: %s...\n", key)
+		return copyFile(archive, dest)
+	})
+}
+
+func verifyTimeMachine(cfg *config.Config) error {
+	configDir := config.Dir()
+	out, err := exec.Command("tmutil", "isexcluded", configDir).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("could not check Time Machine status: %w", err)
+	}
+	if strings.Contains(string(out), "[Excluded]") {
+		return fmt.Errorf("%s is excluded from Time Machine — run: tmutil addexclusion -p %s", configDir, configDir)
+	}
+	fmt.Printf("  Time Machine: %s is included in backups\n", configDir)
+
+	for name, tool := range cfg.Tools {
+		if !tool.Enabled {
+			continue
+		}
+		for _, t := range detect.KnownTools {
+			if t.Name == name {
+				dir := detect.ExpandHome(t.Dir)
+				exOut, _ := exec.Command("tmutil", "isexcluded", dir).CombinedOutput()
+				if strings.Contains(string(exOut), "[Excluded]") {
+					fmt.Printf("  ⚠ %s (%s) is excluded from Time Machine\n", t.Description, dir)
+				} else {
+					fmt.Printf("  Time Machine: %s (%s) ✓\n", t.Description, dir)
+				}
+				break
+			}
 		}
 	}
 	return nil

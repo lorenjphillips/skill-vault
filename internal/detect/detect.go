@@ -43,6 +43,7 @@ var KnownTools = []Tool{
 			{CategoryMemory, "~/.claude/projects", "*/memory/*.md"},
 			{CategoryConfig, "~/.claude/settings.json", ""},
 			{CategoryConfig, "~/.claude/company", ""},
+			{CategoryConfig, "~/.claude/bin", ""},
 			{CategoryConversations, "~/.claude/projects", "*.jsonl"},
 		},
 	},
@@ -85,13 +86,14 @@ var KnownTools = []Tool{
 		},
 	},
 	{
-		Name:        "continue",
+		Name:        "continue-dev",
 		Description: "Continue",
 		Dir:         "~/.continue",
 		Paths: []BackupPath{
 			{CategoryConfig, "~/.continue/config.json", ""},
 			{CategoryConfig, "~/.continue/config.ts", ""},
 			{CategoryRules, "~/.continue/rules", ""},
+			{CategoryConfig, "~/.continue/config.yaml", ""},
 		},
 	},
 	{
@@ -111,9 +113,91 @@ var KnownTools = []Tool{
 			{CategoryConversations, "~/.amp/threads", ""},
 		},
 	},
+	{
+		Name:        "cline",
+		Description: "Cline",
+		Dir:         "~/.cline",
+		Paths: []BackupPath{
+			{CategoryConfig, "~/.cline/config.json", ""},
+			{CategoryRules, "~/.cline/rules", ""},
+			{CategoryConversations, "~/.cline/tasks", ""},
+		},
+	},
+	{
+		Name:        "roo-code",
+		Description: "Roo Code",
+		Dir:         "~/.roo-code",
+		Paths: []BackupPath{
+			{CategoryConfig, "~/.roo-code/config.json", ""},
+			{CategoryRules, "~/.roo-code/rules", ""},
+			{CategoryConversations, "~/.roo-code/tasks", ""},
+		},
+	},
+	{
+		Name:        "tabnine",
+		Description: "Tabnine",
+		Dir:         "~/.tabnine",
+		Paths: []BackupPath{
+			{CategoryConfig, "~/.tabnine/config", ""},
+		},
+	},
+	{
+		Name:        "supermaven",
+		Description: "Supermaven",
+		Dir:         "~/.supermaven",
+		Paths: []BackupPath{
+			{CategoryConfig, "~/.supermaven", ""},
+		},
+	},
+	{
+		Name:        "zed-ai",
+		Description: "Zed AI",
+		Dir:         "~/.config/zed",
+		Paths: []BackupPath{
+			{CategoryConfig, "~/.config/zed/settings.json", ""},
+			{CategoryConfig, "~/.config/zed/keymap.json", ""},
+			{CategoryRules, "~/.config/zed/rules", ""},
+			{CategoryConversations, "~/.config/zed/conversations", ""},
+		},
+	},
+	{
+		Name:        "warp",
+		Description: "Warp AI",
+		Dir:         "~/.warp",
+		Paths: []BackupPath{
+			{CategoryConfig, "~/.warp/config.yaml", ""},
+			{CategoryConversations, "~/.warp/sessions", ""},
+		},
+	},
+	{
+		Name:        "amazon-q",
+		Description: "Amazon Q Developer",
+		Dir:         "~/.aws/amazonq",
+		Paths: []BackupPath{
+			{CategoryConfig, "~/.aws/amazonq", ""},
+		},
+	},
+	{
+		Name:        "gemini-cli",
+		Description: "Gemini CLI",
+		Dir:         "~/.gemini",
+		Paths: []BackupPath{
+			{CategoryConfig, "~/.gemini/settings.json", ""},
+			{CategoryConversations, "~/.gemini/history", ""},
+		},
+	},
+	{
+		Name:        "claude-dev",
+		Description: "Claude Dev (VS Code)",
+		Dir:         "~/.claude-dev",
+		Paths: []BackupPath{
+			{CategoryConfig, "~/.claude-dev/config.json", ""},
+			{CategoryConversations, "~/.claude-dev/tasks", ""},
+		},
+	},
 }
 
-func expandHome(path string) string {
+func ExpandHome(path string) string {
 	if len(path) > 1 && path[:2] == "~/" {
 		home, _ := os.UserHomeDir()
 		return filepath.Join(home, path[2:])
@@ -125,12 +209,9 @@ func Scan() []Tool {
 	var found []Tool
 	for _, tool := range KnownTools {
 		t := tool
-		dir := expandHome(t.Dir)
+		dir := ExpandHome(t.Dir)
 		info, err := os.Stat(dir)
-		if err != nil {
-			continue
-		}
-		if !info.IsDir() {
+		if err != nil || !info.IsDir() {
 			continue
 		}
 		t.Detected = true
@@ -138,7 +219,7 @@ func Scan() []Tool {
 
 		var validPaths []BackupPath
 		for _, p := range t.Paths {
-			expanded := expandHome(p.Path)
+			expanded := ExpandHome(p.Path)
 			if _, err := os.Stat(expanded); err == nil {
 				validPaths = append(validPaths, p)
 			}

@@ -30,7 +30,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		fmt.Println("Detected tools:")
 		for _, t := range detect.Scan() {
 			fmt.Printf("  %s %s %s\n",
-				successStyle.Render("✓"),
+				successStyle.Render("found"),
 				t.Description,
 				dimStyle.Render(detect.FormatSize(t.DiskSize)))
 		}
@@ -40,22 +40,26 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	fmt.Println("Tools:")
 	for name, t := range cfg.Tools {
 		if t.Enabled {
-			fmt.Printf("  %s %s → %v\n", successStyle.Render("✓"), name, t.Categories)
+			fmt.Printf("  %s %s  %v\n", successStyle.Render("on"), name, t.Categories)
 		}
 	}
 
 	fmt.Println()
 	fmt.Println("Backup targets:")
-	if cfg.GitHub.Enabled {
-		fmt.Printf("  %s GitHub: %s\n", successStyle.Render("✓"), cfg.GitHub.Repo)
-	} else {
-		fmt.Printf("  %s GitHub: disabled\n", dimStyle.Render("○"))
+	printTarget := func(enabled bool, label, detail string) {
+		if enabled {
+			fmt.Printf("  %s %s: %s\n", successStyle.Render("on"), label, detail)
+		} else {
+			fmt.Printf("  %s %s\n", dimStyle.Render("off"), label)
+		}
 	}
-	if cfg.S3.Enabled {
-		fmt.Printf("  %s S3: %s (profile: %s)\n", successStyle.Render("✓"), cfg.S3.Bucket, cfg.S3.Profile)
-	} else {
-		fmt.Printf("  %s S3: disabled\n", dimStyle.Render("○"))
-	}
+
+	printTarget(cfg.Git.Enabled, "Git ("+cfg.Git.Provider+")", cfg.Git.Repo)
+	printTarget(cfg.S3.Enabled, "AWS S3", cfg.S3.Bucket)
+	printTarget(cfg.GCS.Enabled, "Google Cloud Storage", cfg.GCS.Bucket)
+	printTarget(cfg.Azure.Enabled, "Azure Blob", cfg.Azure.Container)
+	printTarget(cfg.ICloud.Enabled, "iCloud Drive", "~/Library/Mobile Documents/.../skill-vault/")
+	printTarget(cfg.TimeMachine.Enabled, "Time Machine", "verify inclusion")
 
 	fmt.Println()
 	fmt.Println("Schedule:")
