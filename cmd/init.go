@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -94,67 +95,317 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 
-	selectedTools, err := selectTools(tools)
-	if err != nil {
+	// --- State variables bound across the wizard ---
+
+	var selectedTools []string
+	var backupTargets []string
+
+	// Per-tool category selections. Tools with only one category are
+	// auto-selected and skip the prompt (hidden group).
+	type toolCats struct {
+		name        string
+		description string
+		options     []huh.Option[string]
+		selected    []string
+		autoSelect  bool // true when only one category exists
+	}
+
+	var perTool []toolCats
+	for _, t := range tools {
+		cats := make(map[string]bool)
+		for _, p := range t.Paths {
+			cats[string(p.Category)] = true
+		}
+		if len(cats) == 0 {
+			continue
+		}
+
+		tc := toolCats{name: t.Name, description: t.Description}
+
+		if len(cats) == 1 {
+			for c := range cats {
+				tc.selected = []string{c}
+			}
+			tc.autoSelect = true
+		} else {
+			for c := range cats {
+				tc.options = append(tc.options, huh.NewOption(c, c).Selected(true))
+			}
+		}
+		perTool = append(perTool, tc)
+	}
+
+	// --- Git config state ---
+	var gitProvider string
+	var gitRepo string
+	var gitLocalPath string
+
+	// --- S3 config state ---
+	var s3Bucket string
+	var s3Profile string
+	var s3Region = "us-east-1"
+
+	// --- GCS config state ---
+	var gcsBucket string
+	var gcsProject string
+
+	// --- Azure config state ---
+	var azureContainer string
+	var azureStorageAcct string
+
+	// --- Schedule state ---
+	var schedEnabled bool
+	var intervalChoice string
+
+	// --- Build form groups ---
+
+	home, _ := os.UserHomeDir()
+
+	// Tool options for step 1.
+	toolOptions := make([]huh.Option[string], len(tools))
+	for i, t := range tools {
+		label := fmt.Sprintf("%s (%s)", t.Description, detect.FormatSize(t.DiskSize))
+		toolOptions[i] = huh.NewOption(label, t.Name).Selected(true)
+	}
+
+	groups := []*huh.Group{
+		// Step 1: Select tools
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Which tools do you want to back up?").
+				Description("Space to toggle, Enter to confirm. Shift+Tab to go back.").
+				Options(toolOptions...).
+				Value(&selectedTools),
+		),
+	}
+
+	// Step 2: Per-tool category selection (one group per multi-category tool)
+	for i := range perTool {
+		tc := &perTool[i]
+		if tc.autoSelect {
+			continue
+		}
+		groups = append(groups, huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title(fmt.Sprintf("What to back up from %s?", tc.description)).
+				Description("Space to toggle, Enter to confirm").
+				Options(tc.options...).
+				Value(&tc.selected),
+		).WithHideFunc(func() bool {
+			return !slices.Contains(selectedTools, tc.name)
+		}))
+	}
+
+	// Step 3: Backup targets
+	groups = append(groups, huh.NewGroup(
+		huh.NewMultiSelect[string]().
+			Title("Where should sv back up to?").
+			DescriptionFunc(func() string {
+				for i := range perTool {
+					if !slices.Contains(selectedTools, perTool[i].name) {
+						continue
+					}
+					for _, c := range perTool[i].selected {
+						if c == "conversations" {
+							return "Recommended -- conversation logs are too large for git"
+						}
+					}
+				}
+				return "Compressed daily snapshots for conversation logs"
+			}, &selectedTools).
+			Options(
+				huh.NewOption("Git repository (GitHub, GitLab, etc.)", "git"),
+				huh.NewOption("AWS S3", "s3"),
+				huh.NewOption("Google Cloud Storage", "gcs"),
+				huh.NewOption("Azure Blob Storage", "azure"),
+				huh.NewOption("iCloud Drive", "icloud"),
+				huh.NewOption("Time Machine (verify inclusion)", "timemachine"),
+			).
+			Value(&backupTargets),
+	))
+
+	// Step 4: Git provider
+	groups = append(groups, huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Git provider").
+			Options(
+				huh.NewOption("GitHub", "github"),
+				huh.NewOption("GitLab", "gitlab"),
+				huh.NewOption("Other", "other"),
+			).
+			Value(&gitProvider),
+	).WithHideFunc(func() bool {
+		return !slices.Contains(backupTargets, "git")
+	}))
+
+	// Step 5: Git repo + local path
+	groups = append(groups, huh.NewGroup(
+		huh.NewInput().
+			Title("Repository URL").
+			PlaceholderFunc(func() string {
+				switch gitProvider {
+				case "gitlab":
+					return "git@gitlab.com:you/ai-backup.git"
+				case "other":
+					return "git@git.example.com:you/ai-backup.git"
+				default:
+					return "git@github.com:you/ai-backup.git"
+				}
+			}, &gitProvider).
+			Value(&gitRepo),
+		huh.NewInput().
+			Title("Local clone path").
+			Placeholder(home+"/Development/ai-backup").
+			Value(&gitLocalPath),
+	).WithHideFunc(func() bool {
+		return !slices.Contains(backupTargets, "git")
+	}))
+
+	// Step 6: S3 config
+	groups = append(groups, huh.NewGroup(
+		huh.NewInput().
+			Title("S3 bucket name").
+			Placeholder("my-ai-backups").
+			Value(&s3Bucket),
+		huh.NewInput().
+			Title("AWS CLI profile").
+			Description("Leave blank for default profile").
+			Placeholder("default").
+			Value(&s3Profile),
+		huh.NewInput().
+			Title("AWS region").
+			Value(&s3Region),
+	).WithHideFunc(func() bool {
+		return !slices.Contains(backupTargets, "s3")
+	}))
+
+	// Step 7: GCS config
+	groups = append(groups, huh.NewGroup(
+		huh.NewInput().
+			Title("GCS bucket name").
+			Placeholder("my-ai-backups").
+			Value(&gcsBucket),
+		huh.NewInput().
+			Title("GCP project ID").
+			Description("Leave blank to use gcloud default project").
+			Placeholder("my-project").
+			Value(&gcsProject),
+	).WithHideFunc(func() bool {
+		return !slices.Contains(backupTargets, "gcs")
+	}))
+
+	// Step 8: Azure config
+	groups = append(groups, huh.NewGroup(
+		huh.NewInput().
+			Title("Blob container name").
+			Placeholder("ai-backups").
+			Value(&azureContainer),
+		huh.NewInput().
+			Title("Storage account name").
+			Value(&azureStorageAcct),
+	).WithHideFunc(func() bool {
+		return !slices.Contains(backupTargets, "azure")
+	}))
+
+	// Step 9: Schedule toggle
+	groups = append(groups, huh.NewGroup(
+		huh.NewConfirm().
+			Title("Set up automatic backups?").
+			Description("Creates a macOS launchd job to sync on a schedule").
+			Value(&schedEnabled),
+	))
+
+	// Step 10: Schedule interval
+	groups = append(groups, huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("How often should sv sync?").
+			Options(
+				huh.NewOption("Every 6 hours", "6h"),
+				huh.NewOption("Every 12 hours", "12h"),
+				huh.NewOption("Every 24 hours (daily)", "24h"),
+				huh.NewOption("Every 2 days", "48h"),
+				huh.NewOption("Every 7 days (weekly)", "168h"),
+			).
+			Value(&intervalChoice),
+	).WithHideFunc(func() bool {
+		return !schedEnabled
+	}))
+
+	// --- Run the wizard as a single form (Shift+Tab navigates back) ---
+
+	if err := checkCancel(huh.NewForm(groups...).Run()); err != nil {
 		return err
 	}
+
+	// --- Build config from wizard state ---
+
 	if len(selectedTools) == 0 {
 		fmt.Println("No tools selected.")
 		return nil
 	}
 
-	toolConfigs, err := selectCategories(tools, selectedTools)
-	if err != nil {
-		return err
-	}
-
-	backupTargets, err := selectBackupTargets(toolConfigs)
-	if err != nil {
-		return err
+	toolConfigs := make(map[string]config.ToolConfig)
+	for i := range perTool {
+		tc := &perTool[i]
+		if !slices.Contains(selectedTools, tc.name) {
+			continue
+		}
+		if len(tc.selected) == 0 {
+			continue
+		}
+		toolConfigs[tc.name] = config.ToolConfig{Enabled: true, Categories: tc.selected}
 	}
 
 	cfg := &config.Config{
 		Tools: toolConfigs,
 	}
 
-	for _, target := range backupTargets {
-		switch target {
-		case "git":
-			gitCfg, err := configureGit()
-			if err != nil {
-				return err
-			}
-			cfg.Git = gitCfg
-		case "s3":
-			s3Cfg, err := configureS3()
-			if err != nil {
-				return err
-			}
-			cfg.S3 = s3Cfg
-		case "gcs":
-			gcsCfg, err := configureGCS()
-			if err != nil {
-				return err
-			}
-			cfg.GCS = gcsCfg
-		case "azure":
-			azureCfg, err := configureAzure()
-			if err != nil {
-				return err
-			}
-			cfg.Azure = azureCfg
-		case "icloud":
-			cfg.ICloud = config.ICloudConfig{Enabled: true}
-		case "timemachine":
-			cfg.TimeMachine = config.TimeMachineConfig{Enabled: true}
+	if slices.Contains(backupTargets, "git") {
+		if gitLocalPath == "" {
+			gitLocalPath = home + "/Development/ai-backup"
+		}
+		cfg.Git = config.GitConfig{
+			Enabled:   true,
+			Provider:  gitProvider,
+			Repo:      gitRepo,
+			LocalPath: gitLocalPath,
 		}
 	}
-
-	scheduleCfg, err := configureSchedule()
-	if err != nil {
-		return err
+	if slices.Contains(backupTargets, "s3") {
+		cfg.S3 = config.S3Config{
+			Enabled: true,
+			Bucket:  s3Bucket,
+			Profile: s3Profile,
+			Region:  s3Region,
+		}
 	}
-	cfg.Schedule = scheduleCfg
+	if slices.Contains(backupTargets, "gcs") {
+		cfg.GCS = config.GCSConfig{
+			Enabled: true,
+			Bucket:  gcsBucket,
+			Project: gcsProject,
+		}
+	}
+	if slices.Contains(backupTargets, "azure") {
+		cfg.Azure = config.AzureConfig{
+			Enabled:     true,
+			Container:   azureContainer,
+			StorageAcct: azureStorageAcct,
+		}
+	}
+	if slices.Contains(backupTargets, "icloud") {
+		cfg.ICloud = config.ICloudConfig{Enabled: true}
+	}
+	if slices.Contains(backupTargets, "timemachine") {
+		cfg.TimeMachine = config.TimeMachineConfig{Enabled: true}
+	}
+
+	if schedEnabled {
+		cfg.Schedule = config.ScheduleConfig{
+			Enabled:  true,
+			Interval: strings.TrimSpace(intervalChoice),
+		}
+	}
 
 	if err := cfg.Save(); err != nil {
 		return fmt.Errorf("saving config: %w", err)
@@ -163,8 +414,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Println(successStyle.Render("Config saved to " + config.Path()))
 
-	if scheduleCfg.Enabled {
-		if err := schedule.Install(scheduleCfg.Interval); err != nil {
+	if cfg.Schedule.Enabled {
+		if err := schedule.Install(cfg.Schedule.Interval); err != nil {
 			return fmt.Errorf("installing schedule: %w", err)
 		}
 		fmt.Println(successStyle.Render("Scheduled sync installed (launchd)"))
@@ -173,277 +424,4 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Println(dimStyle.Render("Run 'sv sync' to back up now."))
 	return nil
-}
-
-func selectTools(tools []detect.Tool) ([]string, error) {
-	options := make([]huh.Option[string], len(tools))
-	for i, t := range tools {
-		label := fmt.Sprintf("%s (%s)", t.Description, detect.FormatSize(t.DiskSize))
-		options[i] = huh.NewOption(label, t.Name).Selected(true)
-	}
-
-	var selected []string
-	err := checkCancel(huh.NewMultiSelect[string]().
-		Title("Which tools do you want to back up?").
-		Description("Space to toggle, Enter to confirm").
-		Options(options...).
-		Value(&selected).
-		Run())
-
-	return selected, err
-}
-
-func selectCategories(tools []detect.Tool, selectedNames []string) (map[string]config.ToolConfig, error) {
-	result := make(map[string]config.ToolConfig)
-	selectedSet := make(map[string]bool)
-	for _, n := range selectedNames {
-		selectedSet[n] = true
-	}
-
-	for _, t := range tools {
-		if !selectedSet[t.Name] {
-			continue
-		}
-
-		categories := make(map[string]bool)
-		for _, p := range t.Paths {
-			categories[string(p.Category)] = true
-		}
-
-		if len(categories) == 0 {
-			continue
-		}
-
-		if len(categories) == 1 {
-			cats := make([]string, 0, len(categories))
-			for c := range categories {
-				cats = append(cats, c)
-			}
-			result[t.Name] = config.ToolConfig{Enabled: true, Categories: cats}
-			continue
-		}
-
-		options := make([]huh.Option[string], 0, len(categories))
-		for c := range categories {
-			options = append(options, huh.NewOption(c, c).Selected(true))
-		}
-
-		var selected []string
-		err := checkCancel(huh.NewMultiSelect[string]().
-			Title(fmt.Sprintf("What to back up from %s?", t.Description)).
-			Description("Space to toggle, Enter to confirm").
-			Options(options...).
-			Value(&selected).
-			Run())
-		if err != nil {
-			return nil, err
-		}
-
-		result[t.Name] = config.ToolConfig{Enabled: true, Categories: selected}
-	}
-
-	return result, nil
-}
-
-func selectBackupTargets(toolConfigs map[string]config.ToolConfig) ([]string, error) {
-	hasConversations := false
-	for _, t := range toolConfigs {
-		for _, c := range t.Categories {
-			if c == "conversations" {
-				hasConversations = true
-			}
-		}
-	}
-
-	options := []huh.Option[string]{
-		huh.NewOption("Git repository (GitHub, GitLab, etc.)", "git"),
-	}
-
-	cloudHint := "Compressed daily snapshots for conversation logs"
-	if hasConversations {
-		cloudHint = "Recommended — conversation logs are too large for git"
-	}
-
-	options = append(options,
-		huh.NewOption("AWS S3", "s3"),
-		huh.NewOption("Google Cloud Storage", "gcs"),
-		huh.NewOption("Azure Blob Storage", "azure"),
-		huh.NewOption("iCloud Drive", "icloud"),
-		huh.NewOption("Time Machine (verify inclusion)", "timemachine"),
-	)
-
-	var selected []string
-	err := checkCancel(huh.NewMultiSelect[string]().
-		Title("Where should sv back up to?").
-		Description(cloudHint).
-		Options(options...).
-		Value(&selected).
-		Run())
-
-	return selected, err
-}
-
-func configureGit() (config.GitConfig, error) {
-	var cfg config.GitConfig
-	cfg.Enabled = true
-
-	var provider string
-	err := checkCancel(huh.NewSelect[string]().
-		Title("Git provider").
-		Options(
-			huh.NewOption("GitHub", "github"),
-			huh.NewOption("GitLab", "gitlab"),
-			huh.NewOption("Other", "other"),
-		).
-		Value(&provider).
-		Run())
-	if err != nil {
-		return cfg, err
-	}
-	cfg.Provider = provider
-
-	placeholder := "git@github.com:you/ai-backup.git"
-	if provider == "gitlab" {
-		placeholder = "git@gitlab.com:you/ai-backup.git"
-	} else if provider == "other" {
-		placeholder = "git@git.example.com:you/ai-backup.git"
-	}
-
-	home, _ := os.UserHomeDir()
-	err = checkCancel(huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Repository URL").
-				Placeholder(placeholder).
-				Value(&cfg.Repo),
-			huh.NewInput().
-				Title("Local clone path").
-				Placeholder(home+"/Development/ai-backup").
-				Value(&cfg.LocalPath),
-		),
-	).Run())
-
-	if err != nil {
-		return cfg, err
-	}
-
-	if cfg.Repo == "" {
-		return cfg, fmt.Errorf("repository URL is required")
-	}
-
-	if cfg.LocalPath == "" {
-		cfg.LocalPath = home + "/Development/ai-backup"
-	}
-
-	return cfg, nil
-}
-
-func configureS3() (config.S3Config, error) {
-	var cfg config.S3Config
-	cfg.Enabled = true
-	cfg.Region = "us-east-1"
-
-	err := checkCancel(huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("S3 bucket name").
-				Placeholder("my-ai-backups").
-				Value(&cfg.Bucket),
-			huh.NewInput().
-				Title("AWS CLI profile").
-				Description("Leave blank for default profile").
-				Placeholder("default").
-				Value(&cfg.Profile),
-			huh.NewInput().
-				Title("AWS region").
-				Value(&cfg.Region),
-		),
-	).Run())
-
-	return cfg, err
-}
-
-func configureGCS() (config.GCSConfig, error) {
-	var cfg config.GCSConfig
-	cfg.Enabled = true
-
-	err := checkCancel(huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("GCS bucket name").
-				Placeholder("my-ai-backups").
-				Value(&cfg.Bucket),
-			huh.NewInput().
-				Title("GCP project ID").
-				Description("Leave blank to use gcloud default project").
-				Placeholder("my-project").
-				Value(&cfg.Project),
-		),
-	).Run())
-
-	return cfg, err
-}
-
-func configureAzure() (config.AzureConfig, error) {
-	var cfg config.AzureConfig
-	cfg.Enabled = true
-
-	err := checkCancel(huh.NewForm(
-		huh.NewGroup(
-			huh.NewInput().
-				Title("Blob container name").
-				Placeholder("ai-backups").
-				Value(&cfg.Container),
-			huh.NewInput().
-				Title("Storage account name").
-				Value(&cfg.StorageAcct),
-		),
-	).Run())
-
-	return cfg, err
-}
-
-func configureSchedule() (config.ScheduleConfig, error) {
-	var cfg config.ScheduleConfig
-
-	err := checkCancel(huh.NewConfirm().
-		Title("Set up automatic backups?").
-		Description("Creates a macOS launchd job to sync on a schedule").
-		Value(&cfg.Enabled).
-		Run())
-	if err != nil || !cfg.Enabled {
-		return cfg, err
-	}
-
-	var intervalChoice string
-	err = checkCancel(huh.NewSelect[string]().
-		Title("How often should sv sync?").
-		Options(
-			huh.NewOption("Every 6 hours", "6h"),
-			huh.NewOption("Every 12 hours", "12h"),
-			huh.NewOption("Every 24 hours (daily)", "24h"),
-			huh.NewOption("Every 2 days", "48h"),
-			huh.NewOption("Every 7 days (weekly)", "168h"),
-			huh.NewOption("Custom", "custom"),
-		).
-		Value(&intervalChoice).
-		Run())
-	if err != nil {
-		return cfg, err
-	}
-
-	if intervalChoice == "custom" {
-		err = checkCancel(huh.NewInput().
-			Title("Custom interval").
-			Description("Go duration format: e.g. 8h, 72h (minimum 1h)").
-			Placeholder("24h").
-			Value(&intervalChoice).
-			Run())
-		if err != nil {
-			return cfg, err
-		}
-	}
-
-	cfg.Interval = strings.TrimSpace(intervalChoice)
-	return cfg, nil
 }
