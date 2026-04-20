@@ -77,6 +77,14 @@ Launchd job installed. Run `sv sync` to back up now.
 go install github.com/lorenjphillips/sv@latest
 ```
 
+Make sure `$GOPATH/bin` is in your PATH:
+
+```bash
+export PATH=$PATH:$(go env GOPATH)/bin
+```
+
+Add that line to your `~/.zshrc` or `~/.bashrc` to make it permanent.
+
 ## Usage
 
 ### `sv init`
