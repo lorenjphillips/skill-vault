@@ -53,7 +53,7 @@ Interactive setup that:
 1. Scans for installed AI tools
 2. Lets you select which tools and categories to back up
 3. Configures backup targets (git, cloud storage, iCloud, Time Machine)
-4. Sets up a macOS launchd job for automatic backups
+4. Optionally sets up a macOS launchd job for automatic backups
 
 ### Manual Sync
 
@@ -65,6 +65,12 @@ skill-vault sync
 
 ```bash
 skill-vault status
+```
+
+### Remove Schedule
+
+```bash
+skill-vault uninstall
 ```
 
 ## Config
@@ -97,9 +103,9 @@ schedule:
 ## Requirements
 
 - macOS (launchd scheduling)
-- `git` (for git backup)
-- `rsync` (for file sync)
-- Cloud CLI tools only if using that target (`aws`, `gcloud`, `az`)
+- `git` and `rsync` for git-based backup
+- `tar` for cloud storage backup (compression)
+- Cloud CLI only if using that target: `aws`, `gcloud`, or `az`
 
 ## License
 

@@ -225,6 +225,9 @@ func Scan() []Tool {
 			}
 		}
 		t.Paths = validPaths
+		if len(validPaths) == 0 {
+			continue
+		}
 		found = append(found, t)
 	}
 	return found

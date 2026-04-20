@@ -27,8 +27,6 @@ var (
 	dimStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("240"))
 
-	warnStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214"))
 )
 
 const banner = `
@@ -214,7 +212,11 @@ func selectCategories(tools []detect.Tool, selectedNames []string) (map[string]c
 			categories[string(p.Category)] = true
 		}
 
-		if len(categories) <= 1 {
+		if len(categories) == 0 {
+			continue
+		}
+
+		if len(categories) == 1 {
 			cats := make([]string, 0, len(categories))
 			for c := range categories {
 				cats = append(cats, c)
@@ -305,6 +307,8 @@ func configureGit() (config.GitConfig, error) {
 	placeholder := "git@github.com:you/ai-backup.git"
 	if provider == "gitlab" {
 		placeholder = "git@gitlab.com:you/ai-backup.git"
+	} else if provider == "other" {
+		placeholder = "git@git.example.com:you/ai-backup.git"
 	}
 
 	home, _ := os.UserHomeDir()
@@ -321,11 +325,19 @@ func configureGit() (config.GitConfig, error) {
 		),
 	).Run())
 
+	if err != nil {
+		return cfg, err
+	}
+
+	if cfg.Repo == "" {
+		return cfg, fmt.Errorf("repository URL is required")
+	}
+
 	if cfg.LocalPath == "" {
 		cfg.LocalPath = home + "/Development/ai-backup"
 	}
 
-	return cfg, err
+	return cfg, nil
 }
 
 func configureS3() (config.S3Config, error) {
@@ -387,10 +399,6 @@ func configureAzure() (config.AzureConfig, error) {
 			huh.NewInput().
 				Title("Storage account name").
 				Value(&cfg.StorageAcct),
-			huh.NewInput().
-				Title("Resource group").
-				Description("Leave blank if not needed").
-				Value(&cfg.ResourceGroup),
 		),
 	).Run())
 

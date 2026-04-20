@@ -56,15 +56,21 @@ func syncGit(cfg *config.Config) error {
 		}
 	}
 
-	runIn(repoDir, "git", "stash", "push", "--include-untracked", "-m",
+	stashOut, _ := runInCapture(repoDir, "git", "stash", "push", "--include-untracked", "-m",
 		fmt.Sprintf("skill-vault auto-stash %s", time.Now().Format("2006-01-02 15:04")))
+	stashed := !strings.Contains(stashOut, "No local changes to save")
 
 	branch := detectDefaultBranch(repoDir)
 	if err := runIn(repoDir, "git", "pull", "--rebase", "origin", branch); err != nil {
+		if stashed {
+			runIn(repoDir, "git", "stash", "pop")
+		}
 		return fmt.Errorf("pull: %w", err)
 	}
 
-	runIn(repoDir, "git", "stash", "drop")
+	if stashed {
+		runIn(repoDir, "git", "stash", "drop")
+	}
 
 	for name, tool := range cfg.Tools {
 		if !tool.Enabled {
@@ -198,21 +204,21 @@ func syncCloudConversations(cfg *config.Config, uploadFn func(archive, key strin
 				continue
 			}
 
+			datestamp := time.Now().Format("20060102")
 			archive := filepath.Join(os.TempDir(), fmt.Sprintf("%s-conversations-%s.tar.gz",
-				name, time.Now().Format("20060102")))
+				name, datestamp))
+			defer os.Remove(archive)
 
 			fmt.Printf("  Compressing %s conversations...\n", toolDef.Description)
 			if err := run("tar", "czf", archive, "-C", filepath.Dir(src), filepath.Base(src)); err != nil {
 				return fmt.Errorf("tar %s: %w", name, err)
 			}
 
-			key := fmt.Sprintf("%s-conversations-%s.tar.gz", name, time.Now().Format("20060102"))
+			key := fmt.Sprintf("%s-conversations-%s.tar.gz", name, datestamp)
 			if err := uploadFn(archive, key); err != nil {
-				os.Remove(archive)
 				return err
 			}
 
-			os.Remove(archive)
 			fmt.Printf("  Uploaded %s\n", key)
 		}
 	}
@@ -278,7 +284,7 @@ func verifyTimeMachine(cfg *config.Config) error {
 		return fmt.Errorf("could not check Time Machine status: %w", err)
 	}
 	if strings.Contains(string(out), "[Excluded]") {
-		return fmt.Errorf("%s is excluded from Time Machine — run: tmutil addexclusion -p %s", configDir, configDir)
+		return fmt.Errorf("%s is excluded from Time Machine — run: tmutil removeexclusion -p %s", configDir, configDir)
 	}
 	fmt.Printf("  Time Machine: %s is included in backups\n", configDir)
 
@@ -304,7 +310,10 @@ func verifyTimeMachine(cfg *config.Config) error {
 
 func copyGlob(root, pattern, destDir string) error {
 	return filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)
@@ -354,4 +363,11 @@ func runIn(dir, name string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func runInCapture(dir, name string, args ...string) (string, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }

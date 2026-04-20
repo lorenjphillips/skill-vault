@@ -13,7 +13,7 @@ var rootCmd = &cobra.Command{
 	Long: `skill-vault detects installed AI coding tools and backs up their skills,
 configs, memory, and conversation logs.
 
-Supports 17+ tools including Claude Code, Cursor, Codex, Windsurf, Aider,
+Supports 17 tools including Claude Code, Cursor, Codex, Windsurf, Aider,
 Continue, Copilot, Amp, Cline, Roo Code, and more.
 
 Backup targets: Git (GitHub/GitLab), AWS S3, Google Cloud Storage,

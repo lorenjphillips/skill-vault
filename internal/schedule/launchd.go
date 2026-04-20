@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"text/template"
 	"time"
 )
@@ -105,8 +106,15 @@ func Install(intervalStr string) error {
 
 func Uninstall() error {
 	path := plistPath()
-	exec.Command("launchctl", "unload", path).Run()
-	os.Remove(path)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("no launchd job installed")
+	}
+	if err := exec.Command("launchctl", "unload", path).Run(); err != nil {
+		return fmt.Errorf("launchctl unload: %w", err)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove plist: %w", err)
+	}
 	return nil
 }
 
@@ -123,8 +131,11 @@ func Status() string {
 	if err != nil {
 		return "installed but not loaded"
 	}
-	_ = out
-	return "running"
+	output := string(out)
+	if strings.Contains(output, "\"PID\"") {
+		return "active"
+	}
+	return "loaded (idle)"
 }
 
 func LastRun() string {
