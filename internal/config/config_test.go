@@ -31,10 +31,9 @@ func TestConfigRoundTrip(t *testing.T) {
 			Project: "my-project",
 		},
 		Azure: AzureConfig{
-			Enabled:       false,
-			Container:     "az-container",
-			StorageAcct:   "mystorageaccount",
-			ResourceGroup: "my-rg",
+			Enabled:     false,
+			Container:   "az-container",
+			StorageAcct: "mystorageaccount",
 		},
 		ICloud:      ICloudConfig{Enabled: true},
 		TimeMachine: TimeMachineConfig{Enabled: false},

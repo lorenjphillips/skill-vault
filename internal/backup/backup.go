@@ -1,6 +1,8 @@
 package backup
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,30 +15,94 @@ import (
 	"github.com/lorenjphillips/sv/internal/detect"
 )
 
+// cmdTimeout is the maximum wall-clock time for any subprocess. This prevents
+// indefinite hangs when running under launchd (e.g. a credential prompt that
+// will never be answered).
+const cmdTimeout = 5 * time.Minute
+
+// Preflight checks that required external tools are available for each enabled
+// backup target. It returns a slice of human-readable warning strings — one per
+// missing dependency. Warnings are non-fatal; the caller should display them but
+// still attempt the sync so the actual operation error surfaces if needed.
+func Preflight(cfg *config.Config) []string {
+	var warnings []string
+
+	check := func(binary, context string) {
+		if _, err := exec.LookPath(binary); err != nil {
+			warnings = append(warnings, fmt.Sprintf("%s: '%s' not found in PATH — install %s first", context, binary, binary))
+		}
+	}
+
+	if cfg.Git.Enabled {
+		check("git", "git backup")
+		check("rsync", "git backup")
+		if cfg.Git.Repo == "" {
+			warnings = append(warnings, "git backup: no repository URL configured — run 'sv init' to set one")
+		}
+	}
+
+	if cfg.S3.Enabled {
+		check("aws", "s3 backup")
+		check("tar", "s3 backup")
+	}
+
+	if cfg.GCS.Enabled {
+		check("gcloud", "gcs backup")
+		check("tar", "gcs backup")
+	}
+
+	if cfg.Azure.Enabled {
+		check("az", "azure backup")
+		check("tar", "azure backup")
+	}
+
+	if cfg.ICloud.Enabled {
+		home, _ := os.UserHomeDir()
+		icloudBase := filepath.Join(home, "Library", "Mobile Documents", "com~apple~CloudDocs")
+		if _, err := os.Stat(icloudBase); os.IsNotExist(err) {
+			warnings = append(warnings, "icloud backup: iCloud Drive directory not found — is iCloud Drive enabled?")
+		}
+		check("tar", "icloud backup")
+	}
+
+	if cfg.TimeMachine.Enabled {
+		check("tmutil", "time machine backup")
+	}
+
+	return warnings
+}
+
 func Run(cfg *config.Config) error {
+	var errs []error
+
 	if cfg.Git.Enabled {
 		if err := syncGit(cfg); err != nil {
-			return fmt.Errorf("git sync: %w", err)
+			fmt.Printf("  ✗ git sync failed: %s\n", err)
+			errs = append(errs, fmt.Errorf("git sync: %w", err))
 		}
 	}
 	if cfg.S3.Enabled {
 		if err := syncS3(cfg); err != nil {
-			return fmt.Errorf("s3 sync: %w", err)
+			fmt.Printf("  ✗ s3 sync failed: %s\n", err)
+			errs = append(errs, fmt.Errorf("s3 sync: %w", err))
 		}
 	}
 	if cfg.GCS.Enabled {
 		if err := syncGCS(cfg); err != nil {
-			return fmt.Errorf("gcs sync: %w", err)
+			fmt.Printf("  ✗ gcs sync failed: %s\n", err)
+			errs = append(errs, fmt.Errorf("gcs sync: %w", err))
 		}
 	}
 	if cfg.Azure.Enabled {
 		if err := syncAzure(cfg); err != nil {
-			return fmt.Errorf("azure sync: %w", err)
+			fmt.Printf("  ✗ azure sync failed: %s\n", err)
+			errs = append(errs, fmt.Errorf("azure sync: %w", err))
 		}
 	}
 	if cfg.ICloud.Enabled {
 		if err := syncICloud(cfg); err != nil {
-			return fmt.Errorf("icloud sync: %w", err)
+			fmt.Printf("  ✗ icloud sync failed: %s\n", err)
+			errs = append(errs, fmt.Errorf("icloud sync: %w", err))
 		}
 	}
 	if cfg.TimeMachine.Enabled {
@@ -44,7 +110,8 @@ func Run(cfg *config.Config) error {
 			fmt.Printf("  ⚠ Time Machine: %s\n", err)
 		}
 	}
-	return nil
+
+	return errors.Join(errs...)
 }
 
 func syncGit(cfg *config.Config) error {
@@ -57,20 +124,28 @@ func syncGit(cfg *config.Config) error {
 		}
 	}
 
-	stashOut, _ := runInCapture(repoDir, "git", "stash", "push", "--include-untracked", "-m",
-		fmt.Sprintf("sv auto-stash %s", time.Now().Format("2006-01-02 15:04")))
-	stashed := !strings.Contains(stashOut, "No local changes to save")
+	// Check whether the repo has any commits. A freshly cloned empty repo has no
+	// HEAD, so git pull --rebase would fail. In that case we skip stash/pull and
+	// just do the initial commit+push below.
+	hasCommits := exec.Command("git", "-C", repoDir, "rev-parse", "HEAD").Run() == nil
 
 	branch := detectDefaultBranch(repoDir)
-	if err := runIn(repoDir, "git", "pull", "--rebase", "origin", branch); err != nil {
+
+	if hasCommits {
+		stashOut, _ := runInCapture(repoDir, "git", "stash", "push", "--include-untracked", "-m",
+			fmt.Sprintf("sv auto-stash %s", time.Now().Format("2006-01-02 15:04")))
+		stashed := !strings.Contains(stashOut, "No local changes to save")
+
+		if err := runIn(repoDir, "git", "pull", "--rebase", "origin", branch); err != nil {
+			if stashed {
+				_ = runIn(repoDir, "git", "stash", "pop")
+			}
+			return fmt.Errorf("pull: %w", err)
+		}
+
 		if stashed {
 			_ = runIn(repoDir, "git", "stash", "pop")
 		}
-		return fmt.Errorf("pull: %w", err)
-	}
-
-	if stashed {
-		_ = runIn(repoDir, "git", "stash", "drop")
 	}
 
 	for name, tool := range cfg.Tools {
@@ -247,7 +322,7 @@ func syncGCS(cfg *config.Config) error {
 	return syncCloudConversations(cfg, func(archive, key string) error {
 		dest := fmt.Sprintf("gs://%s/%s", cfg.GCS.Bucket, key)
 		fmt.Printf("  Uploading to %s...\n", dest)
-		args := []string{"storage", "cp", archive, dest, "--quiet"}
+		args := []string{"--quiet", "storage", "cp", archive, dest}
 		if cfg.GCS.Project != "" {
 			args = append(args, "--project", cfg.GCS.Project)
 		}
@@ -271,7 +346,9 @@ func syncAzure(cfg *config.Config) error {
 func syncICloud(cfg *config.Config) error {
 	home, _ := os.UserHomeDir()
 	icloudDir := filepath.Join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "sv")
-	os.MkdirAll(icloudDir, 0755)
+	if err := os.MkdirAll(icloudDir, 0755); err != nil {
+		return fmt.Errorf("create icloud dir: %w", err)
+	}
 
 	return syncCloudConversations(cfg, func(archive, key string) error {
 		dest := filepath.Join(icloudDir, key)
@@ -311,37 +388,49 @@ func verifyTimeMachine(cfg *config.Config) error {
 	return nil
 }
 
+// copyGlob walks root and copies files whose relative path matches pattern.
+// Pattern uses filepath.Match syntax and may contain path separators (e.g.
+// "*/memory/*.md"). For multi-segment patterns, matching is attempted at every
+// suffix of the relative path so that deeply nested files can still match.
 func copyGlob(root, pattern, destDir string) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
+		if err != nil || d.IsDir() {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, path)
-		matched, _ := filepath.Match(pattern, rel)
-		if !matched {
-			parts := strings.Split(rel, string(filepath.Separator))
-			if len(parts) > 1 {
-				matched, _ = filepath.Match(pattern, filepath.Join(parts[len(parts)-2], parts[len(parts)-1]))
-			}
-		}
-		if !matched {
-			for _, part := range strings.Split(pattern, "/") {
-				if m, _ := filepath.Match(part, filepath.Base(path)); m {
-					matched = true
-					break
-				}
-			}
-		}
-		if matched {
+
+		if matchGlob(pattern, rel) {
 			dest := filepath.Join(destDir, rel)
-			os.MkdirAll(filepath.Dir(dest), 0755)
+			if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+				return err
+			}
 			return copyFile(path, dest)
 		}
 		return nil
 	})
+}
+
+// matchGlob checks whether rel matches pattern. It tries the full relative
+// path first, then progressively shorter suffixes (dropping leading segments)
+// so that a pattern like "*/memory/*.md" can match "foo/bar/memory/note.md".
+func matchGlob(pattern, rel string) bool {
+	// Normalize to forward slashes for consistent matching.
+	rel = filepath.ToSlash(rel)
+	pattern = filepath.ToSlash(pattern)
+
+	if m, _ := filepath.Match(pattern, rel); m {
+		return true
+	}
+
+	// Try suffix matches: for rel "a/b/c/d.md", try "b/c/d.md", "c/d.md", "d.md".
+	parts := strings.Split(rel, "/")
+	for i := 1; i < len(parts); i++ {
+		suffix := strings.Join(parts[i:], "/")
+		if m, _ := filepath.Match(pattern, suffix); m {
+			return true
+		}
+	}
+	return false
 }
 
 func copyFile(src, dst string) error {
@@ -353,14 +442,18 @@ func copyFile(src, dst string) error {
 }
 
 func run(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
 func runIn(dir, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -368,7 +461,9 @@ func runIn(dir, name string, args ...string) error {
 }
 
 func runInCapture(dir, name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err

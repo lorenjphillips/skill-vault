@@ -33,10 +33,9 @@ type GCSConfig struct {
 }
 
 type AzureConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	Container     string `yaml:"container"`
-	StorageAcct   string `yaml:"storage_account"`
-	ResourceGroup string `yaml:"resource_group"`
+	Enabled     bool   `yaml:"enabled"`
+	Container   string `yaml:"container"`
+	StorageAcct string `yaml:"storage_account"`
 }
 
 type ICloudConfig struct {

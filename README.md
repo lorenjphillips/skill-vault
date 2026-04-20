@@ -42,23 +42,22 @@ Launchd job installed. Run `sv sync` to back up now.
 
 | Tool | Skills / Rules | Config | Memory | Conversations |
 |------|---------------|--------|--------|---------------|
-| Claude Code | `skills/`, `agents/`, `commands/` | `settings.json` | `projects/*/memory/` | `projects/*.jsonl` |
-| Cursor | `rules/`, `skills-cursor/` | `settings.json`, `mcp.json`, `argv.json` | | `projects/` |
+| Claude Code | `skills/`, `agents/`, `commands/` | `settings.json`, `company/`, `bin/` | `projects/*/memory/` | `projects/*.jsonl` |
+| Cursor | `rules/` | `mcp.json` | | |
 | Codex | `skills/` | `config.toml`, `config.yaml` | `memories/` | `sessions/` |
-| Windsurf | `rules/` | `settings.json` | `memories/` | |
+| Windsurf | `rules/` | `mcp_config.json` | `memories/` | |
 | Aider | | `.aider.conf.yml` | | `chat-history/` |
-| Continue | `rules/` | `config.json`, `config.ts`, `config.yaml` | | |
+| Continue | `rules/` | `config.json`, `config.ts`, `config.yaml` | | `sessions/` |
 | Copilot | | config dir | | |
 | Amp | | `config.yaml` | | `threads/` |
 | Cline | `rules/` | `config.json` | | `tasks/` |
 | Roo Code | `rules/` | `config.json` | | `tasks/` |
-| Tabnine | | `config/` | | |
+| Tabnine | | `tabnine_config.json` | | |
 | Supermaven | | config dir | | |
-| Zed AI | `rules/` | `settings.json`, `keymap.json` | | `conversations/` |
-| Warp AI | | `config.yaml`, `launch_configurations/` | | `sessions/` |
+| Zed AI | `rules/` | `settings.json`, `keymap.json`, `tasks.json` | | `conversations/` |
+| Warp AI | | `themes/`, `workflows/` | | |
 | Amazon Q | | config dir | | |
-| Gemini CLI | | `settings.json`, `GEMINI.md`, `mcp_config.json` | `antigravity/knowledge/` | `antigravity/`, `history/` |
-| Claude Dev | | `config.json` | | `tasks/` |
+| Gemini CLI | | `settings.json`, `GEMINI.md` | | `history/` |
 
 ## Backup Targets
 

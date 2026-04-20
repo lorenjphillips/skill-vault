@@ -29,6 +29,13 @@ func runSync(cmd *cobra.Command, args []string) error {
 	start := time.Now()
 	fmt.Println(titleStyle.Render("sv sync"))
 
+	if warnings := backup.Preflight(cfg); len(warnings) > 0 {
+		for _, w := range warnings {
+			fmt.Println(dimStyle.Render("  ⚠ " + w))
+		}
+		fmt.Println()
+	}
+
 	if err := backup.Run(cfg); err != nil {
 		return err
 	}

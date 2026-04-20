@@ -27,11 +27,13 @@ type Tool struct {
 	Name        string
 	Description string
 	Dir         string
+	AltDirs     []string
 	Paths       []BackupPath
 	Detected    bool
 	DiskSize    int64
 }
 
+// KnownTools is the list of 16 known AI coding tools (Claude Dev removed as duplicate of Cline).
 var KnownTools = []Tool{
 	{
 		Name:        "claude",
@@ -54,11 +56,7 @@ var KnownTools = []Tool{
 		Dir:         "~/.cursor",
 		Paths: []BackupPath{
 			{CategoryRules, "~/.cursor/rules", ""},
-			{CategorySkills, "~/.cursor/skills-cursor", ""},
-			{CategoryConfig, "~/.cursor/settings.json", ""},
 			{CategoryConfig, "~/.cursor/mcp.json", ""},
-			{CategoryConfig, "~/.cursor/argv.json", ""},
-			{CategoryConversations, "~/.cursor/projects", ""},
 		},
 	},
 	{
@@ -70,7 +68,6 @@ var KnownTools = []Tool{
 			{CategoryMemory, "~/.codex/memories", ""},
 			{CategoryConfig, "~/.codex/config.toml", ""},
 			{CategoryConfig, "~/.codex/config.yaml", ""},
-			{CategoryConfig, "~/.codex/instructions.md", ""},
 			{CategoryConversations, "~/.codex/sessions", ""},
 		},
 	},
@@ -81,7 +78,7 @@ var KnownTools = []Tool{
 		Paths: []BackupPath{
 			{CategoryMemory, "~/.codeium/windsurf/memories", ""},
 			{CategoryRules, "~/.codeium/windsurf/rules", ""},
-			{CategoryConfig, "~/.codeium/windsurf/settings.json", ""},
+			{CategoryConfig, "~/.codeium/windsurf/mcp_config.json", ""},
 		},
 	},
 	{
@@ -100,8 +97,9 @@ var KnownTools = []Tool{
 		Paths: []BackupPath{
 			{CategoryConfig, "~/.continue/config.json", ""},
 			{CategoryConfig, "~/.continue/config.ts", ""},
-			{CategoryRules, "~/.continue/rules", ""},
 			{CategoryConfig, "~/.continue/config.yaml", ""},
+			{CategoryRules, "~/.continue/rules", ""},
+			{CategoryConversations, "~/.continue/sessions", ""},
 		},
 	},
 	{
@@ -135,6 +133,7 @@ var KnownTools = []Tool{
 		Name:        "roo-code",
 		Description: "Roo Code",
 		Dir:         "~/.roo-code",
+		AltDirs:     []string{"~/.roo"},
 		Paths: []BackupPath{
 			{CategoryConfig, "~/.roo-code/config.json", ""},
 			{CategoryRules, "~/.roo-code/rules", ""},
@@ -146,7 +145,7 @@ var KnownTools = []Tool{
 		Description: "Tabnine",
 		Dir:         "~/.tabnine",
 		Paths: []BackupPath{
-			{CategoryConfig, "~/.tabnine/config", ""},
+			{CategoryConfig, "~/.tabnine/tabnine_config.json", ""},
 		},
 	},
 	{
@@ -164,6 +163,7 @@ var KnownTools = []Tool{
 		Paths: []BackupPath{
 			{CategoryConfig, "~/.config/zed/settings.json", ""},
 			{CategoryConfig, "~/.config/zed/keymap.json", ""},
+			{CategoryConfig, "~/.config/zed/tasks.json", ""},
 			{CategoryRules, "~/.config/zed/rules", ""},
 			{CategoryConversations, "~/.config/zed/conversations", ""},
 		},
@@ -173,9 +173,8 @@ var KnownTools = []Tool{
 		Description: "Warp AI",
 		Dir:         "~/.warp",
 		Paths: []BackupPath{
-			{CategoryConfig, "~/.warp/config.yaml", ""},
-			{CategoryConfig, "~/.warp/launch_configurations", ""},
-			{CategoryConversations, "~/.warp/sessions", ""},
+			{CategoryConfig, "~/.warp/themes", ""},
+			{CategoryConfig, "~/.warp/workflows", ""},
 		},
 	},
 	{
@@ -193,20 +192,7 @@ var KnownTools = []Tool{
 		Paths: []BackupPath{
 			{CategoryConfig, "~/.gemini/settings.json", ""},
 			{CategoryConfig, "~/.gemini/GEMINI.md", ""},
-			{CategoryConfig, "~/.gemini/mcp_config.json", ""},
-			{CategoryMemory, "~/.gemini/antigravity/knowledge", ""},
-			{CategoryMemory, "~/.gemini/antigravity/context_state", ""},
 			{CategoryConversations, "~/.gemini/history", ""},
-			{CategoryConversations, "~/.gemini/antigravity", ""},
-		},
-	},
-	{
-		Name:        "claude-dev",
-		Description: "Claude Dev (VS Code)",
-		Dir:         "~/.claude-dev",
-		Paths: []BackupPath{
-			{CategoryConfig, "~/.claude-dev/config.json", ""},
-			{CategoryConversations, "~/.claude-dev/tasks", ""},
 		},
 	},
 }
@@ -223,11 +209,29 @@ func Scan() []Tool {
 	var found []Tool
 	for _, tool := range KnownTools {
 		t := tool
+		detected := false
+
+		// Check primary dir
 		dir := ExpandHome(t.Dir)
-		info, err := os.Stat(dir)
-		if err != nil || !info.IsDir() {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			detected = true
+		}
+
+		// Check alternate dirs if primary not found
+		if !detected {
+			for _, altDir := range t.AltDirs {
+				expanded := ExpandHome(altDir)
+				if info, err := os.Stat(expanded); err == nil && info.IsDir() {
+					detected = true
+					break
+				}
+			}
+		}
+
+		if !detected {
 			continue
 		}
+
 		t.Detected = true
 		t.DiskSize = dirSize(dir)
 
