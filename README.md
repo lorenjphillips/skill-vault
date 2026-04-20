@@ -1,5 +1,10 @@
 # sv
 
+[![CI](https://github.com/lorenjphillips/sv/actions/workflows/ci.yml/badge.svg)](https://github.com/lorenjphillips/sv/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/lorenjphillips/sv)](https://goreportcard.com/report/github.com/lorenjphillips/sv)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/lorenjphillips/sv)](go.mod)
+
 Back up your AI agent skills, config, memory, and conversation logs across all installed tools.
 
 ## How It Works
